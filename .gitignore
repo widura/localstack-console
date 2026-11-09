@@ -1,0 +1,15 @@
+.env
+.env.*
+!.env.example
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+node_modules/
+.pytest_cache/
+.coverage
+coverage/
+/console-*.png
+/s3-file-browser.png
+.DS_Store
+Thumbs.db
