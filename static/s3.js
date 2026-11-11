@@ -21,7 +21,7 @@ async function s3Refresh(bucket=s3State.bucket,prefix){
  $('detail').hidden=true;s3Files.hidden=false;s3Files.setAttribute('aria-busy','true');
  s3Files.replaceChildren(el('div','Loading files…','empty'));
  try{
-  const data=await api('detail',{resource:bucket,region,prefix:s3State.prefix,...(s3State.tokens[s3State.page]?{cursor:s3State.tokens[s3State.page]}:{})},'s3');
+  const data=await api('dev_folders',{resource:bucket,region,prefix:s3State.prefix,...(s3State.tokens[s3State.page]?{cursor:s3State.tokens[s3State.page]}:{})},'s3');
   if(serial!==s3State.serial||request!==requestId||!s3Active(bucket,region))return;
   s3State.data=data;s3Draw();
  }catch(e){if(serial===s3State.serial&&s3Active(bucket,region)){
@@ -46,9 +46,10 @@ function s3Draw(){
   for(const object of objects){const row=el('tr',''),name=el('td','','s3-name'),actions=el('td','','s3-row-actions');
    const open=s3Button(object.Key,()=>s3Object(object.Size>750000?'metadata':'preview',object,bucket,region),'s3-key');open.title=object.Key;name.append(open);
    const buttons=el('div','','tools');
-   for(const [action,title] of [['preview','Preview'],['download','Download'],['metadata','Details'],['copy','Copy key'],['delete','Delete']]){
+   for(const [action,title] of [['preview','Preview'],['download','Download'],['metadata','Details'],['edit','Edit text'],['versions','Versions'],['link','Presigned URL'],['copy','Copy key'],['delete','Delete']]){
     const button=s3Button(title,()=>s3Object(action,object,bucket,region),action==='delete'?'s3-delete':'');button.setAttribute('aria-label',title+' '+object.Key);
-    if(object.Size>750000&&['download','preview'].includes(action)){button.disabled=true;button.title='Console transfers are limited to 750 KB. Use the CLI for this file.';}
+    if(object.Size>750000&&action==='preview'){button.disabled=true;button.title='Preview limit is 750 KB. Download streams larger files.';}
+    if(object.Size>1000000&&action==='edit'){button.disabled=true;button.title='The text editor is limited to 1 MB.';}
     buttons.append(button);
    }
    actions.append(buttons);row.append(name,el('td',s3Size(object.Size)),el('td',s3Date(object.LastModified)),actions);body.append(row);
@@ -58,7 +59,7 @@ function s3Draw(){
  const paging=el('div','','tools s3-pagination');
  if(page>0)paging.append(s3Button('Previous files',()=>{s3State.page--;return s3Refresh(bucket);}));
  if(data.NextContinuationToken)paging.append(s3Button('Next files',()=>{s3State.tokens[page+1]=data.NextContinuationToken;s3State.page=page+1;return s3Refresh(bucket);}));
- paging.append(el('span','100 objects per page · Transfers up to 750 KB'));s3Files.append(paging);
+ paging.append(el('span','100 entries per page · Uploads up to 100 MB · Downloads stream directly'));s3Files.append(paging);
  const raw=el('details','','s3-raw');raw.append(el('summary','Raw listing response'),el('pre',JSON.stringify(data,null,2)));s3Files.append(raw);
 }
 function imageType(bytes){

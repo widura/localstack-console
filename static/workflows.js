@@ -42,7 +42,7 @@ workDialog.querySelector('.cancel').onclick=()=>workDialog.close();
 workDialog.querySelector('.save').onclick=()=>{try{const name=prompt('Payload name (stored in this browser)');if(!name)return;const saved=readStore('console-payloads',{});saved[name]={...workContext,payload:workValues()};writeStore('console-payloads',saved);}catch(e){workDialog.querySelector('.workerror').textContent=e.message;}};
 workDialog.querySelector('form').onsubmit=async e=>{
  e.preventDefault();const ctx={...workContext},p=workValues(),buttons=[...workDialog.querySelectorAll('button')];
- if(['delete','delete_object','delete_item','ack','purge','unsubscribe','put','empty_bucket','update_code','upload_zip','update_config'].includes(ctx.action)&&!confirm('Confirm '+workflowSpecs[ctx.action][0]+' for '+ctx.resource+'?'+(ctx.action==='put'?' An existing item with this key will be replaced.':'')))return;
+ if(['delete','delete_object','delete_item','ack','purge','unsubscribe','put','empty_bucket','update_code','upload_zip','update_config','update_value'].includes(ctx.action)&&!confirm(ctx.service==='secretsmanager'&&ctx.action==='delete'?(p.forceDelete?'Permanently delete secret ':'Schedule deletion in 7 days for secret ')+ctx.resource+'?':'Confirm '+workflowSpecs[ctx.action][0]+' for '+ctx.resource+'?'+(ctx.action==='put'?' An existing item with this key will be replaced.':'')))return;
  buttons.forEach(b=>b.disabled=true);
  try{
   if(['upload','upload_zip'].includes(ctx.action)){const file=workDialog.querySelector('[type=file]').files[0];if(!file||file.size>750000)throw Error('Choose a file no larger than 750 KB.');const bytes=new Uint8Array(await file.arrayBuffer());let binary='';for(const b of bytes)binary+=String.fromCharCode(b);p.data=btoa(binary);p.contentType=file.type;}
@@ -74,7 +74,7 @@ detail=async function(...args){const target=service,id=requestId;await baseDetai
 const baseApi=api;
 let replaying=false;
 api=async function(action,extra={},target=service){const result=await baseApi(action,extra,target);
- if(!replaying&&['create','upload','put','subscribe'].includes(action)){
+ if(!replaying&&!['secretsmanager','ssm'].includes(target)&&['create','upload','put','subscribe'].includes(action)){
   try{const steps=readStore('console-recipe',[]);steps.push({service:target,action,params:{region:$('region').value,...extra}});writeStore('console-recipe',steps);}catch(e){$('notice').textContent='Operation succeeded, but the setup recipe could not be saved: '+e.message;$('notice').hidden=false;}
  }
  return result;

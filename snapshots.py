@@ -6,8 +6,9 @@ from urllib.parse import urlsplit
 from urllib.request import urlopen
 from resources import create_resource
 from workflows import operate
+from configuration import configuration_operation, parameter_metadata
 
-SERVICES = {'s3','sqs','sns','lambda','dynamodb'}
+SERVICES = {'s3','sqs','sns','lambda','dynamodb','secretsmanager','ssm'}
 MAX_FILE = 750000
 
 
@@ -80,12 +81,29 @@ def export_resource(service, resource, region, client):
             {'service':service,'action':'update_config','params':{'resource':resource,'handler':f['Handler'],'environment':json.dumps(f.get('Environment',{}).get('Variables',{}))}}
         ])
         notes.append('Lambda restore uses the console execution role. Layers, triggers, versions, aliases and custom permissions are excluded.')
+    elif service == 'secretsmanager':
+        meta = c.describe_secret(SecretId=resource)
+        value = configuration_operation(service,'reveal',{'resource':resource},region,client)
+        binary = 'SecretBinary' in value
+        params = {'name':meta['Name'],'value':value['SecretBinary' if binary else 'SecretString'],
+                  'valueType':'binary' if binary else 'text','description':meta.get('Description','')}
+        if meta.get('KmsKeyId'): params['kmsKeyId'] = meta['KmsKeyId']
+        notes.append('Contains the current secret value in plaintext/base64. Versions, rotation, tags and resource policies are excluded; custom KMS keys must already exist.')
+    elif service == 'ssm':
+        meta = parameter_metadata(c,resource)
+        value = c.get_parameter(Name=resource,WithDecryption=True)['Parameter']
+        params = {'name':resource,'value':value['Value'],'parameterType':meta['Type'],
+                  'tier':meta.get('Tier','Standard'),'description':meta.get('Description','')}
+        if meta['Type']=='SecureString' and meta.get('KeyId'): params['kmsKeyId']=meta['KeyId']
+        notes.append('Contains the current parameter value in plaintext, including SecureString. History, labels, policies, tags and validation patterns are excluded; custom KMS keys must already exist.')
     else: raise ValueError('Unsupported export service')
     return {'create':{'service':service,'action':'create','params':params},'steps':steps,'notes':notes}
 
 
-def export_selection(selection, region, client):
+def export_selection(selection, region, client, include_sensitive=False):
     if not isinstance(selection,list) or not 1 <= len(selection) <= 50: raise ValueError('Select 1–50 resources')
+    if not include_sensitive and any(item.get('service') in {'secretsmanager','ssm'} for item in selection):
+        raise ValueError('Confirm inclusion of secret and parameter values before exporting')
     creates, data, subscriptions, notes = [], [], [], []
     for item in selection:
         if item.get('service') not in SERVICES or not item.get('resource'): raise ValueError('Invalid resource selection')

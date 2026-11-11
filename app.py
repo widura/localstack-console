@@ -1,4 +1,5 @@
 import json
+import base64
 import os
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -10,6 +11,9 @@ from resources import create_resource
 from workflows import operate
 from advanced import advanced, attributes
 from snapshots import export_selection, restore_step
+from configuration import configuration_operation
+from developer import developer
+import transfers
 
 ENDPOINT = os.getenv('LOCALSTACK_ENDPOINT', 'http://localhost:4566').rstrip('/')
 REGION = os.getenv('AWS_DEFAULT_REGION', 'eu-west-2')
@@ -21,22 +25,24 @@ def client(service, region):
                       s3={'addressing_style': 'path'}))
 
 def execute(service, action, p, region):
+    if isinstance(action,str) and action.startswith('dev_'):
+        return developer(service,action,p,region,client)
     if action == 'export_selection':
-        return export_selection(p.get('selection'), region, client)
+        return export_selection(p.get('selection'), region, client, include_sensitive=p.get('includeSensitiveValues') is True)
     if action == 'restore_step':
         return restore_step(service,p.get('operation'),p.get('params',{}),region,client)
     if action == 'cleanup':
         if p.get('confirmation') != 'DELETE': raise ValueError('Type DELETE to confirm cleanup')
         selection = p.get('selection')
         if not isinstance(selection,list) or not 1 <= len(selection) <= 50: raise ValueError('Select 1–50 resources')
-        if any(x.get('service') not in {'s3','sqs','sns','lambda','dynamodb'} or not x.get('resource') for x in selection): raise ValueError('Invalid resource selection')
+        if any(x.get('service') not in {'s3','sqs','sns','lambda','dynamodb','secretsmanager','ssm'} or not x.get('resource') for x in selection): raise ValueError('Invalid resource selection')
         results=[]
         for item in selection:
             try:
                 if item['service']=='s3' and p.get('emptyBuckets'):
                     advanced('s3','empty_bucket',item,region,client)
                 operate(item['service'],'delete',item,region,client)
-                results.append({**item,'status':'deleted'})
+                results.append({**item,'status':'scheduled for deletion' if item['service']=='secretsmanager' else 'deleted'})
             except Exception as e: results.append({**item,'error':str(e)})
         return {'results':results}
     if action in {'source','update_code','upload_zip','update_config','send_batch','empty_bucket'}:
@@ -46,15 +52,19 @@ def execute(service, action, p, region):
             return json.load(r)
     if action == 'create':
         return create_resource(service, p, region, client)
+    if service in {'secretsmanager','ssm'} and action != 'list':
+        return configuration_operation(service,action,p,region,client)
     if action in {'invoke','upload','download','object_metadata','delete_object','ack','visibility','purge','subscriptions','subscribe','unsubscribe','put','delete_item','query','delete'}:
         return operate(service, action, p, region, client)
     c = client(service, region)
     if action == 'list':
         names = {'s3': ('list_buckets', 'Buckets'), 'sqs': ('list_queues', 'QueueUrls'),
                  'sns': ('list_topics', 'Topics'), 'lambda': ('list_functions', 'Functions'),
-                 'dynamodb': ('list_tables', 'TableNames')}
+                 'dynamodb': ('list_tables', 'TableNames'), 'secretsmanager': ('list_secrets','SecretList'),
+                 'ssm': ('describe_parameters','Parameters')}
         op, key = names[service]
         kwargs = {'MaxResults': 1000} if service == 'sqs' else {}
+        if service == 'secretsmanager': kwargs['IncludePlannedDeletion'] = True
         if c.can_paginate(op):
             items=[]
             for page in c.get_paginator(op).paginate(**kwargs):
@@ -91,20 +101,33 @@ def execute(service, action, p, region):
 
 class Handler(BaseHTTPRequestHandler):
     def reply(self, code, body, content='application/json'):
-        data = body.encode() if isinstance(body, str) else json.dumps(body, default=str).encode()
+        data = body.encode() if isinstance(body, str) else json.dumps(body, default=lambda v:base64.b64encode(v).decode() if isinstance(v,bytes) else str(v)).encode()
         self.send_response(code)
         self.send_header('Content-Type', content)
         self.send_header('Content-Length', str(len(data)))
         self.send_header('X-Content-Type-Options', 'nosniff')
+        self.send_header('Cache-Control','no-store')
         self.end_headers()
         self.wfile.write(data)
     def do_GET(self):
         path = urlsplit(self.path).path
+        if path == '/api/s3/object':
+            try: transfers.download(self,client)
+            except Exception as e: self.reply(400,{'error':str(e)})
+            return
         if path == '/api/config': return self.reply(200, {'endpoint':ENDPOINT, 'region':REGION})
-        files = {'/':('index.html','text/html; charset=utf-8'), '/app.js':('app.js','text/javascript'), '/workflows.js':('workflows.js','text/javascript'), '/advanced.js':('advanced.js','text/javascript'), '/s3.js':('s3.js','text/javascript'), '/style.css':('style.css','text/css')}
+        files = {'/':('index.html','text/html; charset=utf-8'), '/app.js':('app.js','text/javascript'), '/workflows.js':('workflows.js','text/javascript'), '/advanced.js':('advanced.js','text/javascript'), '/s3.js':('s3.js','text/javascript'), '/configuration.js':('configuration.js','text/javascript'), '/style.css':('style.css','text/css')}
+        files['/developer.js']=('developer.js','text/javascript')
         if path not in files: return self.reply(404, {'error':'Not found'})
         name, mime = files[path]
         self.reply(200, (Path(__file__).parent/'static'/name).read_text(), mime)
+    def do_PUT(self):
+        origin=self.headers.get('Origin')
+        if origin and urlsplit(origin).netloc!=self.headers.get('Host'):
+            return self.reply(403,{'error':'Cross-origin request blocked'})
+        if urlsplit(self.path).path!='/api/s3/object':return self.reply(404,{'error':'Not found'})
+        try:transfers.upload(self,client)
+        except Exception as e:self.reply(400,{'error':str(e)})
     def do_POST(self):
         # Browser requests require same-origin JSON; no permissive CORS headers.
         origin = self.headers.get('Origin')
@@ -117,7 +140,7 @@ class Handler(BaseHTTPRequestHandler):
             if size <= 0 or size > 1100000: raise ValueError('Request must be between 1 byte and 1 MB')
             p=json.loads(self.rfile.read(size))
             service=p.get('service')
-            if service not in {'health','s3','sqs','sns','lambda','dynamodb'}: raise ValueError('Unsupported service')
+            if service not in {'health','s3','sqs','sns','lambda','dynamodb','secretsmanager','ssm'}: raise ValueError('Unsupported service')
             result=execute(service,p.get('action'),p,p.get('region') or REGION)
             self.reply(200,result)
         except Exception as e:

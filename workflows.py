@@ -1,9 +1,12 @@
 """Everyday operations; all clients use the console's explicit local credentials."""
 import base64
 import json
+from configuration import configuration_operation
 
 
 def operate(service, action, p, region, client):
+    if service in {'secretsmanager','ssm'}:
+        return configuration_operation(service,action,p,region,client)
     c = client(service, region)
     r = p.get('resource', '')
     if action == 'delete':

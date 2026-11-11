@@ -1,5 +1,5 @@
 const $=id=>document.getElementById(id);
-const services={health:'Overview',s3:'S3 buckets',sqs:'SQS queues',sns:'SNS topics',lambda:'Lambda functions',dynamodb:'DynamoDB tables'};
+const services={health:'Overview',s3:'S3 buckets',sqs:'SQS queues',sns:'SNS topics',lambda:'Lambda functions',dynamodb:'DynamoDB tables',secretsmanager:'Secrets Manager',ssm:'Parameter Store'};
 let service='health',items=[],selected='',cursor=null,requestId=0;
 const nameOf=x=>typeof x==='string'?x:x.Name||x.TopicArn||x.FunctionName||'';
 function el(tag,text,cls){const e=document.createElement(tag);e.textContent=text;if(cls)e.className=cls;return e;}
@@ -13,7 +13,7 @@ const samples={
  'python3.12':'import json\n\ndef handler(event, context):\n    return {"statusCode": 200, "body": json.dumps({"message": "Hello from LocalStack!", "event": event})}\n',
  'nodejs22.x':'exports.handler = async (event) => {\n  return { statusCode: 200, body: JSON.stringify({ message: "Hello from LocalStack!", event }) };\n};\n'
 };
-const singular={s3:'S3 bucket',sqs:'SQS queue',sns:'SNS topic',dynamodb:'DynamoDB table',lambda:'Lambda function'};
+const singular={s3:'S3 bucket',sqs:'SQS queue',sns:'SNS topic',dynamodb:'DynamoDB table',lambda:'Lambda function',secretsmanager:'secret',ssm:'parameter'};
 function inputField(name,label,{value='',type='text',required=false,options=null,hint='',min,max}={}){
  const wrap=el('div','','formfield'),lab=el('label',label);lab.htmlFor='f-'+name;
  let input;
@@ -35,6 +35,16 @@ function compose(action){
  if(action!=='create')inputField('body','Message body',{type:'textarea',required:true,hint:'FIFO messages use group “console” and a unique deduplication ID.'});
  else {
   inputField('name','Resource name',{required:true,hint:service==='s3'?'3–63 lowercase letters, digits, dots or hyphens.':'Choose a name for this resource.'});
+  if(['secretsmanager','ssm'].includes(service)){
+   inputField('description','Description (optional)');
+   if(service==='secretsmanager')inputField('valueType','Value format',{value:'text',options:[['text','Text / JSON'],['binary','Base64 binary']]});
+   if(service==='ssm'){
+    inputField('parameterType','Parameter type',{value:'String',options:[['String','String'],['StringList','StringList (comma separated)'],['SecureString','SecureString']]});
+    inputField('tier','Tier',{value:'Standard',options:[['Standard','Standard · 4 KB'],['Advanced','Advanced · 8 KB']]});
+   }
+   inputField('value','Value',{type:'textarea',required:true,hint:service==='ssm'?'Hierarchical names such as /my-app/dev/database are supported.':'Enter plain text, JSON, or base64 for binary format.'});
+   inputField('kmsKeyId','KMS key ID / alias (optional)',{hint:service==='ssm'?'Only for SecureString. Leave blank to use the default key.':'Leave blank to use the default key.'});
+  }
   if(['sqs','sns'].includes(service)){
    const fifo=inputField('fifo','FIFO',{type:'checkbox',hint:'The .fifo suffix is added automatically.'});
    const dedup=inputField('contentDedup','Content-based deduplication',{type:'checkbox'});dedup.disabled=true;

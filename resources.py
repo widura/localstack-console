@@ -4,6 +4,7 @@ import json
 import re
 import zipfile
 from botocore.exceptions import ClientError
+from configuration import create_configuration
 
 
 def number(p, key, default, low, high):
@@ -17,6 +18,8 @@ def number(p, key, default, low, high):
 
 
 def create_resource(service, p, region, client):
+    if service in {'secretsmanager','ssm'}:
+        return create_configuration(service,p,region,client)
     name = str(p.get('name', '')).strip()
     if not name:
         raise ValueError('Resource name is required')

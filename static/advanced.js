@@ -42,7 +42,7 @@ detail=async function(...args){const target=service,id=requestId;await moreDetai
  $('actions').append(copy,snippets);
 };
 function showSnippets(target,resource){
- const ops={s3:['s3api','list-objects-v2','Bucket'],sqs:['sqs','get-queue-attributes','QueueUrl'],sns:['sns','get-topic-attributes','TopicArn'],lambda:['lambda','get-function-configuration','FunctionName'],dynamodb:['dynamodb','describe-table','TableName']};
+ const ops={s3:['s3api','list-objects-v2','Bucket'],sqs:['sqs','get-queue-attributes','QueueUrl'],sns:['sns','get-topic-attributes','TopicArn'],lambda:['lambda','get-function-configuration','FunctionName'],dynamodb:['dynamodb','describe-table','TableName'],secretsmanager:['secretsmanager','describe-secret','SecretId'],ssm:['ssm','get-parameter','Name']};
  const [cli,op,key]=ops[target],sdk=op.replaceAll('-','_'),flag=key.replace(/[A-Z]/g,(c,i)=>(i?'-':'')+c.toLowerCase());
  const quote=s=>"'"+s.replaceAll("'","'\\''")+"'";
  const endpoint=$('endpoint').textContent.replace('host.docker.internal','localhost'),region=$('region').value;
@@ -64,10 +64,15 @@ render=function(){if(selectionRegion!==$('region').value){chosen.clear();selecti
 };
 selectionButton('Select visible',()=>{if(service==='health')return;for(const box of $('list').querySelectorAll('input[type=checkbox]'))if(!box.checked)box.click();});
 selectionButton('Clear selection',()=>{chosen.clear();selectionChanged();render();});
-selectionButton('Export selected',async()=>{const file=await api('export_selection',{selection:[...chosen.values()],region:selectionRegion},'health');downloadFile(JSON.stringify(file,null,2),'localstack-resources.json','application/json');output(file.notes,'Export notes');});
+selectionButton('Export selected',async()=>{
+ const selection=[...chosen.values()],sensitive=selection.some(x=>['secretsmanager','ssm'].includes(x.service));
+ if(sensitive&&!confirm('This export includes current secret and parameter values in plaintext/base64, including SecureString. Include these values in the downloaded file?'))return;
+ const file=await api('export_selection',{selection,region:selectionRegion,includeSensitiveValues:sensitive},'health');
+ downloadFile(JSON.stringify(file,null,2),'localstack-resources.json','application/json');output(file.notes,'Export notes');
+});
 selectionButton('Cleanup selected',async()=>{
  if(!chosen.size)throw Error('Select resources first.');
- const list=[...chosen.values()];const confirmation=prompt('Permanently delete these resources in '+selectionRegion+'?\n'+list.map(x=>x.service+': '+x.resource).join('\n')+'\nType DELETE to continue.');if(confirmation!=='DELETE')return;
+ const list=[...chosen.values()];const confirmation=prompt('Delete these resources in '+selectionRegion+'? Secrets Manager uses a 7-day recovery window; other deletions are permanent.\n'+list.map(x=>x.service+': '+x.resource).join('\n')+'\nType DELETE to continue.');if(confirmation!=='DELETE')return;
  const emptyBuckets=list.some(x=>x.service==='s3')&&confirm('Also empty selected S3 buckets, including every version and delete marker? Cancel keeps nonempty buckets.');
  const result=await api('cleanup',{selection:list,region:selectionRegion,confirmation,emptyBuckets},'health');
  for(const entry of result.results)if(entry.status==='deleted')chosen.delete(entry.service+'|'+entry.resource);
@@ -79,7 +84,7 @@ replay=async function(recipe){
  if(replaying)throw Error('A restore is already running.');
  if(!recipe||![1,2].includes(recipe.version))throw Error('Expected a console recipe or resource export.');
  const allowed=new Set(['create','upload','put','subscribe','upload_zip','update_config','update_code']);
- if(!Array.isArray(recipe.steps)||recipe.steps.length>1000||recipe.steps.some(s=>!['s3','sqs','sns','lambda','dynamodb'].includes(s.service)||!allowed.has(s.action)||!s.params||typeof s.params!=='object'))throw Error('Invalid resource export.');
+ if(!Array.isArray(recipe.steps)||recipe.steps.length>1000||recipe.steps.some(s=>!['s3','sqs','sns','lambda','dynamodb','secretsmanager','ssm'].includes(s.service)||!allowed.has(s.action)||!s.params||typeof s.params!=='object'))throw Error('Invalid resource export.');
  if(!confirm('Restore '+recipe.steps.length+' steps? Items, code, configuration and files can be overwritten. Existing resources may be reused. Completed steps remain after a failure.\n'+(recipe.notes||[]).join('\n')))return;
  replaying=true;const results=[],mapping=new Map();
  try{for(const step of recipe.steps){const params={...step.params};for(const key of ['resource','queueUrl']){const lookup=(key==='queueUrl'?'sqs':step.service)+'|'+params[key];if(mapping.has(lookup))params[key]=mapping.get(lookup);}
@@ -96,12 +101,9 @@ replay=async function(recipe){
 const refreshTools=el('div','','tools'),pollLabel=el('label','Auto refresh '),poll=document.createElement('select'),stamp=el('span','Not refreshed yet');
 poll.setAttribute('aria-label','Auto refresh interval');for(const [value,label] of [['0','Off'],['10000','10 seconds'],['30000','30 seconds'],['60000','60 seconds']]){const o=el('option',label);o.value=value;poll.append(o);}pollLabel.append(poll);refreshTools.append(pollLabel,stamp);document.querySelector('header').after(refreshTools);
 let pollTimer=null,pollBusy=false;
-function scheduleRefresh(){clearTimeout(pollTimer);const delay=Number(poll.value);if(delay)pollTimer=setTimeout(async()=>{try{if(!document.hidden&&!document.querySelector('dialog[open]')&&!pollBusy&&!replaying&&!$('refresh').disabled){pollBusy=true;const resource=selected,target=service,region=$('region').value,expected=requestId+1,wasOpen=!$('detailPanel').hidden;await load();if(requestId===expected&&target===service&&region===$('region').value&&wasOpen&&resource&&service!=='health')await detail(resource);}}finally{pollBusy=false;scheduleRefresh();}},delay);}
+function scheduleRefresh(){clearTimeout(pollTimer);const delay=Number(poll.value);if(delay)pollTimer=setTimeout(async()=>{try{if(!document.hidden&&!document.querySelector('dialog[open]')&&!document.querySelector('#developerWorkspace :focus, #s3Files input:focus')&&!pollBusy&&!replaying&&!$('refresh').disabled){pollBusy=true;const resource=selected,target=service,region=$('region').value,expected=requestId+1,wasOpen=!$('detailPanel').hidden;await load();if(requestId===expected&&target===service&&region===$('region').value&&wasOpen&&resource&&service!=='health')await detail(resource);}}finally{pollBusy=false;scheduleRefresh();}},delay);}
 poll.onchange=scheduleRefresh;
 const oldLoad=load;
 load=async function(...args){if(selectionRegion!==$('region').value){chosen.clear();selectionRegion=$('region').value;selectionChanged();}await oldLoad(...args);stamp.textContent=($('status').textContent.includes('Connected')?'Last refresh: ':'Refresh failed: ')+new Date().toLocaleTimeString();};
 
 $('refresh').onclick=()=>load();$('region').onchange=()=>load();
-
-
-
